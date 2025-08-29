@@ -16,10 +16,10 @@
 
 # Load library
 library(readxl)
-library(dplyr)
-library(tidyr)
+library(tidyverse)
 library(ggplot2)
 library(gridExtra)
+library(janitor)  # for clean colnames to sneak_case
 
 # Parameters
 k_values <- 2:10
@@ -45,23 +45,26 @@ genetic_id_path <- "C:/Users/patch/Downloads/1928_inds_ID.txt"
 #   as_tibble()
 
 # Load fam and metadata
-fam <- read.table(fam_path, header = FALSE, stringsAsFactors = FALSE)
-fam$V2[fam$V2 == "human1"] <- "Human1"
-fam$V2[fam$V2 == "human2"] <- "Human2"
-fam[fam$V2 == "human2_dup|human2", 2] <- "Human2"
-colnames(fam) <- c("FID", "Genetic ID", "Father ID", "Mother ID", "Sex", "Phenotype")
+fam_colnames <- c("FID", "Genetic ID", "Father ID", "Mother ID", "Sex", "Phenotype")
+fam <- read_table(fam_path, col_names = fam_colnames) %>%
+  mutate(`Genetic ID` = case_when(
+    `Genetic ID` == "human1" ~ "Human1",
+    `Genetic ID` == "human2" ~ "Human2",
+    `Genetic ID` == "human2_dup|human2" ~ "Human2",
+    TRUE ~ `Genetic ID`)
+  )
 
 col_names_for_metadata <- c(
-  "Group_ID",
+  "population.abbreviation",
   "Political Entity",
-  "Human",
-  "Language",          # คอลัมน์ Japanese ตัวที่สอง (อาจจะเป็น Language หรือ Subgroup ก็ได้)
-  "Language_family",
-  "Number?",
+  "Group ID [board]",
+  "Group ID",
+  "Language family",
+  "Number",
   "Region"
 )
-
 metadata <- read_xlsx(metadata_path, col_names = col_names_for_metadata)
+  # clean_names() # convert colnames to sneak_case
 
 # time slot for label
 # df_date <- read_xlsx(metadata_path) %>%
@@ -73,30 +76,21 @@ metadata <- read_xlsx(metadata_path, col_names = col_names_for_metadata)
 #   )
 # )
 
-# Merge fam and metadata together
-fam_merged <- fam %>%
-  left_join(read.table(genetic_id_path, header = TRUE) %>% select(c(sample.id, population.abbreviation)),
-            by = c(`Genetic ID` = "sample.id")) %>% 
-  select(-c(`Father ID`, `Mother ID`, Sex, Phenotype)) %>% 
-  left_join(metadata, by = c(population.abbreviation = "Group_ID")) %>% 
-  rename("Group ID" = population.abbreviation) %>% 
+# Merge genetic_id_path รวมกับ metadata file ก่อน เพื่อสร้าง full_metadata
+genetic_id <- read_table(genetic_id_path)
+full_metadata <- left_join(genetic_id, metadata, by = c("population-abbreviation" = "population.abbreviation"))
+
+# Merge fam and full_metadata together
+fam_merged <- fam %>% 
+  left_join(full_metadata, by = c(`Genetic ID` = "sample-id")) %>% 
+  select(`Genetic ID`, `population-abbreviation`, `Political Entity`, `Group ID`, `Language family`, Region) %>%
   distinct()
 
 
 # Formatting Data ---------------------------------------------------------
 
-# Define region groups
-china_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% "China"]
-mainland_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% c("Thailand","Cambodia","Myanmar","Laos","Vietnam")]
-island_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% c("Indonesia","Philippines","Singapore","Brunei","Malaysia")]
-eastasia_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% c("Mongolia","Taiwan","South Korea","Japan")]
-southasia_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% c("India","Pakistan","Bangladesh","Nepal","Sri Lanka")]
-oceania_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% "Papua New Guinea"]
-europe_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% c("Russia", "USA")]
-africa_ids <- fam_merged$`Group ID`[fam_merged$`Political Entity` %in% "Nigeria"]
-
-region_order <- c("Human1", "Human2", "NW China", "NE China", "Central China", "South China",
-                  "Mainland SEA", "Island SEA", "South Asia", "Oceania", "European", "Africa", "Other")
+# กำหนด region ที่ต้องการเรียง
+region_order <- c("Human1", "Human2", "East Asia", "South East Asia", "Other")
 
 # Process fam_merged_final
 fam_merged_final <- fam_merged %>%
@@ -105,31 +99,13 @@ fam_merged_final <- fam_merged %>%
       `Genetic ID` == "Human1" ~ "Human1",
       `Genetic ID` == "Human2" ~ "Human2",
       
-      `Group ID` %in% c("Bonan.HO", "Qiang.HO", "Dongxiang.HO", "Yugur.HO", "Tibetan.HO",
-                        "Uyghur.DG", "Uyghur.HO", "Uyghur.SG", "Kazakh_China.HO",
-                        "Kyrgyz_China.HO", "Salar.HO", "Xibo.DG", "Xibo.HO",
-                        "Tu.DG", "Tu.HO", "Tibetan_Yunnan.HO") ~ "NW China",
+      `population-abbreviation` == "CHB" ~ "East Asia",
+      `population-abbreviation` %in% c("SG-CH", "SG-ML") ~ "South East Asia",
       
-      `Group ID` %in% c("Oroqen.DG", "Oroqen.HO", "Daur.HO", "Hezhen.DG", "Hezhen.HO",
-                        "Mongola.DG", "Mongola.HO") | `Group ID` %in% eastasia_ids ~ "NE China",
-      
-      `Group ID` %in% c("Han.DG", "Han.HO", "Tujia.DG", "Tujia.HO", "CHB.DG", "CHB.SG",
-                        "China_Lahu.DG", "China_Lahu.HO", "She.DG", "She.HO") ~ "Central China",
-      
-      `Group ID` %in% c("Mulam.HO", "Li.HO", "Dong.HO", "Gelao.HO", "CHS.DG", "CHS.SG",
-                        "CDX.SG", "CDX.DG", "Miao.DG", "Miao.HO", "Yi.DG", "Yi.HO",
-                        "Dai.HO", "Naxi.DG", "Naxi.HO", "Maonan.HO", "Zhuang.HO") ~ "South China",
-      
-      `Group ID` %in% mainland_ids  ~ "Mainland SEA",
-      `Group ID` %in% island_ids    ~ "Island SEA",
-      `Group ID` %in% southasia_ids ~ "South Asia",
-      `Group ID` %in% oceania_ids   ~ "Oceania",
-      `Group ID` %in% europe_ids    ~ "European",
-      `Group ID` %in% africa_ids    ~ "Africa",
-      
-      TRUE ~ "Other"
+      is.na(Region) ~ "Other",
+      TRUE ~ Region
     ),
-    Region = factor(Region, levels = region_order),   # ถ่าไม่ทำเป็น factor มันจะเรียงแบบอักษรศาสตร์ทันที
+    Region = factor(Region, levels = region_order)   # ถ่าไม่ทำเป็น factor มันจะเรียงแบบอักษรศาสตร์ทันที
     
     # SampleType = case_when(`ori full date` == "present" ~ "Modern",
     #                        TRUE ~ "Ancient"),
@@ -173,6 +149,29 @@ ancestry_colors <- c(
 
 # สร้าง ggplot แต่ละค่า k ตาม region -------------------------------------
 
+# สร้างคอลัมน์ใหม่เพื่อ label
+fam_merged_final <- fam_merged_final %>%
+  mutate(
+    Label_Genetic_Group = case_when(
+      is.na(`Group ID`) & is.na(`Language family`) ~ `Genetic ID`,
+      TRUE ~ paste(`Group ID`, `Language family`, sep = "_")))
+
+# สร้าง dataframe แยก sample ที่มีข้อมูล (Modern)
+samples_with_info <- fam_merged_final %>% 
+  filter( ! (is.na(`Group ID`) & is.na(`Language family`)) )
+
+samples_without_info <- fam_merged_final %>% 
+  filter( is.na(`Group ID`) & is.na(`Language family`) )
+
+# ดึงเฉพาะ Human1 และ Human2 ออกมาจากกลุ่มที่ไม่มีข้อมูล (ancient)
+human1_2_samples <- samples_without_info %>% 
+  filter(`Genetic ID` %in% c("Human1", "Human2"))
+
+# นำ dataframe มารวมกัน
+combine_df_for_plot <- bind_rows(human1_2_samples, samples_with_info) %>% 
+  mutate(SampleOrder = row_number())  # เรียง SampleOrder ใหม่ทั้งหมดอีกรอบ
+
+# สร้างฟังก์ชันกลาง
 create_ggplot <- function(k) {
   q_file <- file.path(q_dir, sprintf("PanSNPdb_fig2_ancient_geno0.1.%d.Q", k))
   q_data <- read.table(q_file, header = FALSE)
@@ -182,7 +181,7 @@ create_ggplot <- function(k) {
   colnames(q_subset)[2:(k+1)] <- paste0("Ancestry", 1:k)
   
   # สร้าง dataframe เพื่อดึง fam_merged_final มารวมกับ proportion ของ q file
-  df <- fam_merged_final %>%
+  df <- combine_df_for_plot %>%
     left_join(q_subset, by = "Genetic ID") %>%
     select(SampleOrder, `Genetic ID`, Region, starts_with("Ancestry"))
   
@@ -198,7 +197,7 @@ create_ggplot <- function(k) {
   df_long$Ancestry <- factor(df_long$Ancestry, levels = rev(paste0("Ancestry", 1:k)))
   
   # สร้างเส้นแบ่ง region
-  region_boundaries <- fam_merged_final %>%
+  region_boundaries <- combine_df_for_plot %>%
     group_by(Region) %>%
     summarise(
       start = min(SampleOrder),
@@ -340,8 +339,8 @@ par(mfrow = c(length(k_values), 1), mar = c(4, 5, 4, 8))
 for (k in k_values) {
   create_base_r_barplot_original(
     k = k,
-    df_meta = fam_merged_final,
-    label_var = "GID_LanSampleType",
+    df_meta = combine_df_for_plot,
+    label_var = "Label_Genetic_Group",
     plot_title = paste("Base R barplot: K =", k),
     cex_names = 0.4,
     cex_legend = 0.6
@@ -362,8 +361,8 @@ par(mfrow = c(1, 1), mar = c(4, 5, 4, 8))
 
 create_base_r_barplot_original(
   k = k_new,
-  df_meta = fam_merged_final,
-  label_var = "GID_LanSampleType",
+  df_meta = combine_df_for_plot,
+  label_var = "Label_Genetic_Group",
   plot_title = paste("Base R barplot with borders: K =", k_new),
   cex_names = 0.2,
   cex_legend = 0.8
